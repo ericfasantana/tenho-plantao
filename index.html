@@ -382,9 +382,33 @@ input:checked+.slider:before{transform:translateX(20px);}
         <label class="sw"><input type="checkbox" id="sh-paid"><span class="slider"></span></label>
       </div>
       <div class="fg"><label>Anotações</label><textarea id="sh-notes" placeholder="Observações, repasses..."></textarea></div>
+
+      <!-- RECORRÊNCIA -->
+      <div id="recurrence-section" style="border-top:1px solid var(--g100);padding-top:14px;display:flex;flex-direction:column;gap:12px;">
+        <div class="sw-row">
+          <label style="font-weight:700;color:var(--g800)">🔁 Plantão recorrente</label>
+          <label class="sw"><input type="checkbox" id="sh-recur" onchange="toggleRecurrence()"><span class="slider"></span></label>
+        </div>
+        <div id="recur-fields" style="display:none;flex-direction:column;gap:12px;">
+          <div class="fg">
+            <label>Frequência</label>
+            <select id="sh-freq">
+              <option value="weekly">Toda semana (mesmo dia da semana)</option>
+              <option value="biweekly">A cada 2 semanas</option>
+              <option value="monthly">Todo mês (mesmo dia do mês)</option>
+            </select>
+          </div>
+          <div class="fg">
+            <label>Repetir até *</label>
+            <input type="date" id="sh-recur-end">
+          </div>
+          <div id="recur-preview" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;font-size:.82rem;color:#166534;display:none;"></div>
+        </div>
+      </div>
+
       <div class="modal-actions">
         <button type="button" class="btn-cancel" onclick="closeModal('modal-shift')">Cancelar</button>
-        <button type="submit" class="btn-save">Salvar</button>
+        <button type="submit" class="btn-save" id="btn-save-shift">Salvar</button>
       </div>
       <button type="button" class="btn-danger-full" id="btn-del-shift" style="display:none" onclick="deleteShift()">🗑 Excluir plantão</button>
     </form>
@@ -651,9 +675,64 @@ window.openShiftModal = function(id) {
   document.getElementById('sh-paid').checked=s?.paid||false;
   document.getElementById('sh-notes').value=s?.notes||'';
   document.getElementById('btn-del-shift').style.display=s?'block':'none';
+  // Recorrência só aparece em novo plantão
+  document.getElementById('recurrence-section').style.display=s?'none':'flex';
+  document.getElementById('sh-recur').checked=false;
+  document.getElementById('recur-fields').style.display='none';
+  document.getElementById('recur-preview').style.display='none';
+  document.getElementById('sh-recur-end').value='';
   toggleCustomTime();
   document.getElementById('modal-shift').classList.add('open');
 };
+
+window.toggleRecurrence = function() {
+  const on=document.getElementById('sh-recur').checked;
+  document.getElementById('recur-fields').style.display=on?'flex':'none';
+  if(on) updateRecurPreview();
+};
+
+function getRecurDates() {
+  const startStr=document.getElementById('sh-date').value;
+  const endStr=document.getElementById('sh-recur-end').value;
+  const freq=document.getElementById('sh-freq').value;
+  if(!startStr||!endStr) return [];
+  const start=new Date(startStr+'T00:00:00');
+  const end=new Date(endStr+'T00:00:00');
+  if(end<=start) return [];
+  const dates=[];
+  const cur=new Date(start);
+  // Avança para a próxima ocorrência (não inclui a data inicial, ela já é o plantão base)
+  while(true){
+    if(freq==='weekly') cur.setDate(cur.getDate()+7);
+    else if(freq==='biweekly') cur.setDate(cur.getDate()+14);
+    else if(freq==='monthly') cur.setMonth(cur.getMonth()+1);
+    if(cur>end) break;
+    dates.push(cur.toISOString().slice(0,10));
+  }
+  return dates;
+}
+
+function updateRecurPreview() {
+  const dates=getRecurDates();
+  const preview=document.getElementById('recur-preview');
+  if(!dates.length){preview.style.display='none';return;}
+  const WEEKDAYS=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const list=dates.map(d=>{
+    const [y,m,day]=d.split('-');
+    const dObj=new Date(d+'T00:00:00');
+    const conflict=Object.values(plantoes).some(p=>p.date===d);
+    return`<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:20px;background:${conflict?'#fee2e2':'#dcfce7'};color:${conflict?'#991b1b':'#166534'};font-weight:600">${WEEKDAYS[dObj.getDay()]} ${day}/${m}${conflict?' ⚠️':''}</span>`;
+  }).join('');
+  preview.innerHTML=`<strong>Serão criados ${dates.length} plantão(ões):</strong><br><div style="margin-top:6px">${list}</div>${dates.some(d=>Object.values(plantoes).some(p=>p.date===d))?'<div style="margin-top:8px;color:#b91c1c;font-weight:600">⚠️ Datas em laranja já têm plantão — será adicionado mesmo assim.</div>':''}`;
+  preview.style.display='block';
+}
+
+// Atualiza preview ao mudar campos de recorrência
+['sh-date','sh-recur-end','sh-freq'].forEach(id=>{
+  document.getElementById(id)?.addEventListener('change', ()=>{
+    if(document.getElementById('sh-recur')?.checked) updateRecurPreview();
+  });
+});
 
 window.toggleCustomTime = function() {
   document.getElementById('sh-custom').style.display=document.getElementById('sh-dur').value==='custom'?'grid':'none';
@@ -664,7 +743,7 @@ window.saveShift = async function(e) {
   const localId=document.getElementById('sh-local').value;
   const loc=locais[localId];
   const value=parseFloat(document.getElementById('sh-value').value)||loc?.defaultValue||0;
-  const data={
+  const baseData={
     localId, value,
     date:document.getElementById('sh-date').value,
     duration:document.getElementById('sh-dur').value,
@@ -674,10 +753,38 @@ window.saveShift = async function(e) {
     paid:document.getElementById('sh-paid').checked,
     notes:document.getElementById('sh-notes').value,
   };
-  if(editingShiftId) await fbSet(fbRef(db,`plantoes/${editingShiftId}`),data);
-  else await fbPush(fbRef(db,'plantoes'),data);
-  closeModal('modal-shift');
-  toast(editingShiftId?'Plantão atualizado!':'Plantão salvo! ✓');
+
+  if(editingShiftId) {
+    await fbSet(fbRef(db,`plantoes/${editingShiftId}`),baseData);
+    closeModal('modal-shift');
+    toast('Plantão atualizado! ✓');
+    return;
+  }
+
+  const isRecur=document.getElementById('sh-recur').checked;
+
+  if(isRecur) {
+    const recurDates=getRecurDates();
+    if(!recurDates.length){toast('Defina a data final da recorrência.');return;}
+    // Verifica conflitos
+    const conflicts=recurDates.filter(d=>Object.values(plantoes).some(p=>p.date===d&&p.localId===localId));
+    if(conflicts.length>0){
+      const ok=confirm(`⚠️ Conflito em ${conflicts.length} data(s) com o mesmo local. Criar mesmo assim?`);
+      if(!ok) return;
+    }
+    // Salva o plantão base
+    await fbPush(fbRef(db,'plantoes'),{...baseData,recurrenceGroup:baseData.date+'_'+localId});
+    // Salva os recorrentes
+    for(const d of recurDates){
+      await fbPush(fbRef(db,'plantoes'),{...baseData,date:d,paid:false,recurrenceGroup:baseData.date+'_'+localId});
+    }
+    closeModal('modal-shift');
+    toast(`✓ ${recurDates.length+1} plantões criados!`);
+  } else {
+    await fbPush(fbRef(db,'plantoes'),baseData);
+    closeModal('modal-shift');
+    toast('Plantão salvo! ✓');
+  }
 };
 
 window.deleteShift = async function() {
